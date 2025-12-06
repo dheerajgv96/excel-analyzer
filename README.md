@@ -1,1 +1,230 @@
-# excel-analyzer
+import io
+import datetime
+
+import pandas as pd
+import streamlit as st
+
+
+# =========================
+# CONFIG: COLUMN NAMES
+# =========================
+# ⚠️ IMPORTANT:
+# Replace these with the EXACT header names from your Excel files.
+# I’ve filled them with likely names – you may need to tweak once.
+
+# Inventory file columns
+INV_AREA_COL = "Area"                     # Column C - partial cld
+INV_BIN_STATUS_COL = "Bin Status"        # Column G - Active
+INV_HU_TYPE_COL = "HU Type"              # Column L - Cartons
+INV_SKU_COL = "Sku Code"                 # Column N - SKU
+INV_BATCH_COL = "Batch"                  # Column Q - Batch
+INV_EXPIRY_COL = "Day to Batch Expiry"   # Column T - remove expired and blanks
+INV_QUALITY_COL = "Quality"              # Column W - Good
+INV_INCLUSION_COL = "Inclusion Status"   # Column AD - Included
+INV_HU_CODE_COL = "HU Code"              # Column K - HU Code
+
+# Conveyor file columns
+CONV_HU_COL = "HU"                       # Column G - HU code in conveyor report
+
+# Outbound SBL file columns
+OUT_SKU_ALLOC_COL = "SKU Allocated"      # Column K - SKU Allocated
+OUT_BATCH_ALLOC_COL = "Batch Allocated"  # Column N - Batch Allocated
+
+
+# =========================
+# CORE LOGIC
+# =========================
+
+def clean_inventory(inv_df: pd.DataFrame) -> pd.DataFrame:
+    """Apply all your inventory filters and create SKU_BATCH."""
+    df = inv_df.copy()
+
+    # 1) Keep only partial cld in Area (column C)
+    if INV_AREA_COL in df.columns:
+        df = df[df[INV_AREA_COL].astype(str).str.lower().str.contains("partial cld", na=False)]
+
+    # 2) Bin status = Active (column G)
+    if INV_BIN_STATUS_COL in df.columns:
+        df = df[df[INV_BIN_STATUS_COL].astype(str).str.lower() == "active"]
+
+    # 3) HU Type = Cartons (column L)
+    if INV_HU_TYPE_COL in df.columns:
+        df = df[df[INV_HU_TYPE_COL].astype(str).str.lower() == "cartons"]
+
+    # 4) Remove expired and blanks in expiry column (column T)
+    if INV_EXPIRY_COL in df.columns:
+        # Keep non-blank and not marked as "expired" text
+        expiry_str = df[INV_EXPIRY_COL].astype(str).str.strip()
+        mask_not_blank = expiry_str != ""
+        mask_not_expired = expiry_str.str.lower() != "expired"
+        df = df[mask_not_blank & mask_not_expired]
+
+    # 5) Quality = Good (column W)
+    if INV_QUALITY_COL in df.columns:
+        df = df[df[INV_QUALITY_COL].astype(str).str.lower() == "good"]
+
+    # 6) Inclusion Status = Included (column AD)
+    if INV_INCLUSION_COL in df.columns:
+        df = df[df[INV_INCLUSION_COL].astype(str).str.lower() == "included"]
+
+    # 7) Create SKU_BATCH = SKU + '|' + Batch (columns N + Q)
+    if INV_SKU_COL in df.columns and INV_BATCH_COL in df.columns:
+        df["SKU_BATCH"] = (
+            df[INV_SKU_COL].astype(str).str.strip()
+            + "|"
+            + df[INV_BATCH_COL].astype(str).str.strip()
+        )
+    else:
+        df["SKU_BATCH"] = ""
+
+    # Ensure HU Code string field for joins
+    if INV_HU_CODE_COL in df.columns:
+        df["HU_CODE_STR"] = df[INV_HU_CODE_COL].astype(str).str.strip()
+    else:
+        df["HU_CODE_STR"] = ""
+
+    return df
+
+
+def analyze_wave(inv_df: pd.DataFrame, conv_df: pd.DataFrame, out_df: pd.DataFrame):
+    """
+    Full pipeline:
+    1) Clean inventory (partial cld, active, cartons, not expired, good, included).
+    2) Find HUs not fed (inventory HU not present in conveyor HU).
+    3) From those not-fed HUs, find rows whose SKU-Batch had demand in Outbound SBL.
+    """
+
+    # --- Step 1: Clean inventory ---
+    clean_inv = clean_inventory(inv_df)
+
+    # --- Step 2: Not-fed HUs ---
+    conv = conv_df.copy()
+    if CONV_HU_COL in conv.columns:
+        conv["HU_STR"] = conv[CONV_HU_COL].astype(str).str.strip()
+    else:
+        conv["HU_STR"] = ""
+
+    fed_hus = set(conv["HU_STR"].dropna().unique())
+
+    not_fed_inv = clean_inv[~clean_inv["HU_CODE_STR"].isin(fed_hus)].copy()
+
+    # --- Step 3: Match SKU-Batch with Outbound SBL ---
+    out = out_df.copy()
+
+    # Create outbound SKU_BATCH from SKU Allocated (K) + Batch Allocated (N)
+    if OUT_SKU_ALLOC_COL in out.columns and OUT_BATCH_ALLOC_COL in out.columns:
+        out["SKU_BATCH"] = (
+            out[OUT_SKU_ALLOC_COL].astype(str).str.strip()
+            + "|"
+            + out[OUT_BATCH_ALLOC_COL].astype(str).str.strip()
+        )
+    else:
+        out["SKU_BATCH"] = ""
+
+    outbound_sku_batches = set(out["SKU_BATCH"].dropna().unique())
+
+    not_fed_but_demanded = not_fed_inv[not_fed_inv["SKU_BATCH"].isin(outbound_sku_batches)].copy()
+
+    # Optional: sort outputs nicely
+    sort_cols = []
+    if INV_SKU_COL in inv_df.columns:
+        sort_cols.append(INV_SKU_COL)
+    if INV_BATCH_COL in inv_df.columns:
+        sort_cols.append(INV_BATCH_COL)
+
+    if sort_cols:
+        clean_inv = clean_inv.sort_values(sort_cols)
+        not_fed_inv = not_fed_inv.sort_values(sort_cols)
+        not_fed_but_demanded = not_fed_but_demanded.sort_values(sort_cols)
+
+    return {
+        "clean_inventory": clean_inv,
+        "not_fed_inventory": not_fed_inv,
+        "not_fed_but_demanded": not_fed_but_demanded,
+        "raw_conveyor": conv_df,
+        "raw_outbound": out_df,
+    }
+
+
+# =========================
+# STREAMLIT UI
+# =========================
+
+st.set_page_config(page_title="Wave Inventory Analyzer", layout="wide")
+st.title("📦 Wave Inventory Analyzer")
+st.write(
+    """
+This tool does the exact process you described:
+
+1. Filter *Inventory* → partial CLD, Active bins, Cartons, not expired, Good, Included.
+2. Check which HUs were **not fed** to the conveyor for that wave.
+3. From those HUs, find SKU–Batches that **had demand** in the Outbound SBL report.
+4. Export everything into a single analyzed Excel file.
+"""
+)
+
+st.markdown("### 1️⃣ Upload files")
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    inv_file = st.file_uploader("Inventory file (pre-wave)", type=["xlsx", "xls"])
+
+with col2:
+    conv_file = st.file_uploader("Conveyor HU Events report", type=["xlsx", "xls"])
+
+with col3:
+    out_file = st.file_uploader("Outbound SBL report", type=["xlsx", "xls"])
+
+if inv_file and conv_file and out_file:
+    st.success("✅ All three files uploaded. Click below to process.")
+
+    if st.button("Run analysis"):
+        with st.spinner("Processing files..."):
+
+            # Read files
+            inv_df = pd.read_excel(inv_file)
+            conv_df = pd.read_excel(conv_file)
+            out_df = pd.read_excel(out_file)
+
+            result = analyze_wave(inv_df, conv_df, out_df)
+
+            clean_inventory = result["clean_inventory"]
+            not_fed_inventory = result["not_fed_inventory"]
+            not_fed_but_demanded = result["not_fed_but_demanded"]
+
+            st.markdown("### 2️⃣ Preview results (top 20 rows each)")
+
+            st.subheader("Clean Inventory (after all filters)")
+            st.dataframe(clean_inventory.head(20))
+
+            st.subheader("Not-fed Inventory HUs (all columns of those HUs)")
+            st.dataframe(not_fed_inventory.head(20))
+
+            st.subheader("Not-fed but Demanded (main output)")
+            st.dataframe(not_fed_but_demanded.head(20))
+
+            # Prepare Excel for download
+            buffer = io.BytesIO()
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_name = f"wave_analysis_{ts}.xlsx"
+
+            with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+                clean_inventory.to_excel(writer, sheet_name="clean_inventory", index=False)
+                not_fed_inventory.to_excel(writer, sheet_name="not_fed_inventory", index=False)
+                not_fed_but_demanded.to_excel(writer, sheet_name="not_fed_but_demanded", index=False)
+                result["raw_conveyor"].to_excel(writer, sheet_name="raw_conveyor", index=False)
+                result["raw_outbound"].to_excel(writer, sheet_name="raw_outbound", index=False)
+
+            buffer.seek(0)
+
+            st.markdown("### 3️⃣ Download analyzed Excel file")
+            st.download_button(
+                label="⬇️ Download analyzed Excel",
+                data=buffer,
+                file_name=out_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+
+else:
+    st.info("Upload all three files (Inventory, Conveyor, Outbound SBL) to start.")
