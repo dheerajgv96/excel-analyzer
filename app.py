@@ -126,4 +126,108 @@ def analyze(inv_df: pd.DataFrame,
 # --------------------------------
 # Streamlit UI
 # --------------------------------
-st.set_page_config(page_title="Wave Inventory Analyzer", layout="wi_
+st.set_page_config(page_title="Wave Inventory Analyzer", layout="wide")
+st.title("📦 Wave Inventory Analyzer (HU level inventory)")
+
+st.write(
+    """
+This app automates your manual process:
+
+1. From the Inventory workbook, it uses only the **'HU level'** sheet.
+2. Filters rows where:
+   - **Area Code** = `partial CLD`
+   - **Bin Status** = `Active`
+   - **HU Type** = `Cartons`
+   - **Quality** = `Good`
+   - **Inclusion Status** = `Included`
+3. Finds **HUs not fed** by comparing:
+   - Inventory **HO Code (K)**
+   - Conveyor **InnerHU (H)**
+4. Builds SKU–Batch:
+   - Inventory: **Sku Code (N) + Batch (Q)**
+   - SBL: **Sku (K) + Batch Allocated (N)**
+5. Final result: inventory rows that were **not fed** but **had demand in SBL**.
+"""
+)
+
+inv_file = st.file_uploader("1️⃣ Upload Inventory workbook (with 'HU level' sheet)", type=["xlsx", "xls"])
+conv_file = st.file_uploader("2️⃣ Upload Conveyor file", type=["xlsx", "xls"])
+out_file = st.file_uploader("3️⃣ Upload Outbound SBL file", type=["xlsx", "xls"])
+
+if inv_file and conv_file and out_file:
+    if st.button("🚀 Run Analysis"):
+        # ----- Read Inventory: HU level sheet -----
+        try:
+            inv_xls = pd.ExcelFile(inv_file)
+            if INV_SHEET_NAME not in inv_xls.sheet_names:
+                st.error(
+                    f"Inventory workbook does not contain a sheet named '{INV_SHEET_NAME}'.\n"
+                    f"Available sheets: {inv_xls.sheet_names}"
+                )
+                st.stop()
+            inv_df = pd.read_excel(inv_xls, sheet_name=INV_SHEET_NAME)
+        except Exception as e:
+            st.error(f"Failed to read inventory HU level sheet: {e}")
+            st.stop()
+
+        # ----- Read Conveyor & Outbound -----
+        conv_df = pd.read_excel(conv_file)
+        out_df = pd.read_excel(out_file)
+
+        # Check required columns exist
+        ok = True
+        ok &= require_columns(
+            inv_df,
+            [
+                INV_AREA_COL, INV_BIN_STATUS_COL, INV_HU_TYPE_COL,
+                INV_QUALITY_COL, INV_INCLUSION_COL, INV_HU_CODE_COL,
+                INV_SKU_COL, INV_BATCH_COL
+            ],
+            "Inventory (HU level) sheet",
+        )
+        ok &= require_columns(
+            conv_df,
+            [CONV_INNER_HU_COL],
+            "Conveyor file",
+        )
+        ok &= require_columns(
+            out_df,
+            [OUT_SKU_COL, OUT_BATCH_COL],
+            "Outbound SBL file",
+        )
+
+        if ok:
+            clean_inv, not_fed_inv, not_fed_and_demanded = analyze(inv_df, conv_df, out_df)
+
+            st.subheader("✅ Clean Inventory (HU level, after all filters)")
+            st.dataframe(clean_inv.head(50))
+
+            st.subheader("❌ Not Fed Inventory HUs (rows from HU level sheet)")
+            st.dataframe(not_fed_inv.head(50))
+
+            st.subheader("📌 Not Fed but Required in SBL Demand (final output)")
+            st.dataframe(not_fed_and_demanded.head(50))
+
+            # Prepare Excel for download
+            buffer = io.BytesIO()
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            file_name = f"wave_analysis_{ts}.xlsx"
+
+            with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+                clean_inv.to_excel(writer, sheet_name="clean_inventory_HU_level", index=False)
+                not_fed_inv.to_excel(writer, sheet_name="not_fed_inventory", index=False)
+                not_fed_and_demanded.to_excel(writer, sheet_name="not_fed_and_demanded", index=False)
+                conv_df.to_excel(writer, sheet_name="raw_conveyor", index=False)
+                out_df.to_excel(writer, sheet_name="raw_outbound", index=False)
+
+            buffer.seek(0)
+
+            st.markdown("### ⬇️ Download analyzed Excel")
+            st.download_button(
+                label="Download",
+                data=buffer,
+                file_name=file_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+else:
+    st.info("Upload all three files and then click 'Run Analysis'.")
