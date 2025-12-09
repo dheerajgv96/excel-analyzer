@@ -25,7 +25,7 @@ OUT_SKU_COL = "Sku"                 # Col K
 OUT_BATCH_COL = "Batch Allocated"   # Col N
 
 # Inventory sheet name
-INV_SHEET_NAME = "HU level"         # sheet to use in inventory workbook
+INV_SHEET_NAME = "HU Level"         # sheet to use in inventory workbook
 
 
 # --------------------------------
@@ -127,13 +127,13 @@ def analyze(inv_df: pd.DataFrame,
 # Streamlit UI
 # --------------------------------
 st.set_page_config(page_title="Wave Inventory Analyzer", layout="wide")
-st.title("📦 Wave Inventory Analyzer (HU level inventory)")
+st.title("📦 Wave Inventory Analyzer (HU Level inventory)")
 
 st.write(
     """
 This app automates your manual process:
 
-1. From the Inventory workbook, it uses only the **'HU level'** sheet.
+1. From the Inventory workbook, it uses only the **'HU Level'** sheet.
 2. Filters rows where:
    - **Area Code** = `partial CLD`
    - **Bin Status** = `Active`
@@ -150,13 +150,13 @@ This app automates your manual process:
 """
 )
 
-inv_file = st.file_uploader("1️⃣ Upload Inventory workbook (with 'HU level' sheet)", type=["xlsx", "xls"])
+inv_file = st.file_uploader("1️⃣ Upload Inventory workbook (with 'HU Level' sheet)", type=["xlsx", "xls"])
 conv_file = st.file_uploader("2️⃣ Upload Conveyor file", type=["xlsx", "xls"])
 out_file = st.file_uploader("3️⃣ Upload Outbound SBL file", type=["xlsx", "xls"])
 
 if inv_file and conv_file and out_file:
     if st.button("🚀 Run Analysis"):
-        # ----- Read Inventory: HU level sheet -----
+        # ----- Read Inventory: HU Level sheet -----
         try:
             inv_xls = pd.ExcelFile(inv_file)
             if INV_SHEET_NAME not in inv_xls.sheet_names:
@@ -167,7 +167,7 @@ if inv_file and conv_file and out_file:
                 st.stop()
             inv_df = pd.read_excel(inv_xls, sheet_name=INV_SHEET_NAME)
         except Exception as e:
-            st.error(f"Failed to read inventory HU level sheet: {e}")
+            st.error(f"Failed to read inventory HU Level sheet: {e}")
             st.stop()
 
         # ----- Read Conveyor & Outbound -----
@@ -183,7 +183,7 @@ if inv_file and conv_file and out_file:
                 INV_QUALITY_COL, INV_INCLUSION_COL, INV_HU_CODE_COL,
                 INV_SKU_COL, INV_BATCH_COL
             ],
-            "Inventory (HU level) sheet",
+            "Inventory (HU Level) sheet",
         )
         ok &= require_columns(
             conv_df,
@@ -199,10 +199,10 @@ if inv_file and conv_file and out_file:
         if ok:
             clean_inv, not_fed_inv, not_fed_and_demanded = analyze(inv_df, conv_df, out_df)
 
-            st.subheader("✅ Clean Inventory (HU level, after all filters)")
+            st.subheader("✅ Clean Inventory (HU Level, after all filters)")
             st.dataframe(clean_inv.head(50))
 
-            st.subheader("❌ Not Fed Inventory HUs (rows from HU level sheet)")
+            st.subheader("❌ Not Fed Inventory HUs (rows from HU Level sheet)")
             st.dataframe(not_fed_inv.head(50))
 
             st.subheader("📌 Not Fed but Required in SBL Demand (final output)")
@@ -231,4 +231,5 @@ if inv_file and conv_file and out_file:
             )
 else:
     st.info("Upload all three files and then click 'Run Analysis'.")
+
 
