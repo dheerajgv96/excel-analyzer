@@ -7,7 +7,7 @@ import datetime
 # FINAL COLUMN CONFIG (MATCHES YOUR FILES)
 # --------------------------------
 
-# Inventory (HU level sheet)
+# Inventory (HU Level sheet)
 INV_AREA_COL = "Area Code"          # Col C
 INV_BIN_STATUS_COL = "Bin Status"   # Col G
 INV_HU_TYPE_COL = "HU Type"         # Col L
@@ -231,3 +231,4 @@ if inv_file and conv_file and out_file:
             )
 else:
     st.info("Upload all three files and then click 'Run Analysis'.")
+
