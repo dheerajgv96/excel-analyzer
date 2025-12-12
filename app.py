@@ -3,233 +3,200 @@ import pandas as pd
 import io
 import datetime
 
-# --------------------------------
-# FINAL COLUMN CONFIG (MATCHES YOUR FILES)
-# --------------------------------
+# --------------------------
+# FINAL CONFIG (matches your files)
+# --------------------------
+INV_SHEET_NAME = "HU level"        # inventory workbook sheet to use
 
-# Inventory (HU Level sheet)
-INV_AREA_COL = "Area Code"          # Col C
-INV_BIN_STATUS_COL = "Bin Status"   # Col G
-INV_HU_TYPE_COL = "HU Type"         # Col L
-INV_QUALITY_COL = "Quality"         # Col W
-INV_INCLUSION_COL = "Inclusion Status"  # Col AD
-INV_HU_CODE_COL = "HU Code"         # Col K
-INV_SKU_COL = "Sku Code"            # Col N
-INV_BATCH_COL = "Batch"             # Col Q
+# Inventory (HU level) columns
+INV_AREA_COL = "Area Code"         # Column C
+INV_BIN_STATUS_COL = "Bin Status"  # Column G
+INV_HU_TYPE_COL = "HU Type"        # Column L
+INV_QUALITY_COL = "Quality"        # Column W
+INV_INCLUSION_COL = "Inclusion Status"  # Column AD
+INV_HU_CODE_COL = "HU Code"        # Column K
+INV_SKU_COL = "Sku Code"           # Column N
+INV_BATCH_COL = "Batch"            # Column Q
 
-# Conveyor file
-CONV_INNER_HU_COL = "InnerHU"       # Col H
+# Conveyor
+CONV_INNER_HU_COL = "InnerHU"      # Column H
 
-# Outbound SBL file
-OUT_SKU_COL = "Sku"                 # Col K
-OUT_BATCH_COL = "Batch Allocated"   # Col N
+# Outbound SBL
+OUT_SKU_COL = "Sku"                # Column K
+OUT_BATCH_COL = "Batch Allocated"  # Column N
 
-# Inventory sheet name
-INV_SHEET_NAME = "HU Level"         # sheet to use in inventory workbook
+# --------------------------
+# Helpers
+# --------------------------
+def normalize_series(s: pd.Series) -> pd.Series:
+    s2 = s.fillna("").astype(str)
+    s2 = s2.str.replace("\u00A0", " ", regex=False)  # NBSP -> space
+    s2 = s2.str.replace(r"\s+", " ", regex=True)     # collapse whitespace
+    s2 = s2.str.strip()
+    s2 = s2.str.lower()
+    return s2
 
+def concat_no_delim(a: pd.Series, b: pd.Series) -> pd.Series:
+    # normalize then concat without delim, keeping casing/whitespace handled
+    return normalize_series(a) + normalize_series(b)
 
-# --------------------------------
-# Helper: check columns
-# --------------------------------
-def require_columns(df, required_cols, df_name):
-    missing = [c for c in required_cols if c not in df.columns]
-    if missing:
-        st.error(
-            f"{df_name} is missing required columns: {missing}\n\n"
-            f"Available columns: {list(df.columns)}"
-        )
-        return False
-    return True
+# --------------------------
+# Core pipeline
+# --------------------------
+def run_pipeline(inv_df: pd.DataFrame, conv_df: pd.DataFrame, out_df: pd.DataFrame):
+    # 1) Use HU level sheet (inv_df already from that sheet)
+    inv = inv_df.copy()
 
+    # 2) Apply inventory filters (safe if columns missing)
+    if INV_AREA_COL in inv.columns:
+        inv = inv[inv[INV_AREA_COL].astype(str).str.lower().str.contains("partial", na=False)]
+    if INV_BIN_STATUS_COL in inv.columns:
+        inv = inv[inv[INV_BIN_STATUS_COL].astype(str).str.lower() == "active"]
+    if INV_HU_TYPE_COL in inv.columns:
+        inv = inv[inv[INV_HU_TYPE_COL].astype(str).str.lower() == "cartons"]
+    if INV_QUALITY_COL in inv.columns:
+        inv = inv[inv[INV_QUALITY_COL].astype(str).str.lower() == "good"]
+    if INV_INCLUSION_COL in inv.columns:
+        inv = inv[inv[INV_INCLUSION_COL].astype(str).str.lower().str.contains("included", na=False)]
 
-# --------------------------------
-# Step 1: Clean inventory (from HU level sheet)
-# --------------------------------
-def clean_inventory(inv_df: pd.DataFrame) -> pd.DataFrame:
-    df = inv_df.copy()
-
-    # Area Code = partial CLD
-    if INV_AREA_COL in df.columns:
-        df = df[df[INV_AREA_COL].astype(str).str.lower() == "partial cld"]
-
-    # Bin Status = Active
-    if INV_BIN_STATUS_COL in df.columns:
-        df = df[df[INV_BIN_STATUS_COL].astype(str).str.lower() == "active"]
-
-    # HU Type = Cartons
-    if INV_HU_TYPE_COL in df.columns:
-        df = df[df[INV_HU_TYPE_COL].astype(str).str.lower() == "cartons"]
-
-    # Quality = Good
-    if INV_QUALITY_COL in df.columns:
-        df = df[df[INV_QUALITY_COL].astype(str).str.lower() == "good"]
-
-    # Inclusion Status = Included
-    if INV_INCLUSION_COL in df.columns:
-        df = df[df[INV_INCLUSION_COL].astype(str).str.lower() == "included"]
-
-    # Normalised HO code string (join key with conveyor)
-    if INV_HU_CODE_COL in df.columns:
-        df["HO_CODE_STR"] = df[INV_HU_CODE_COL].astype(str).str.strip()
+    # 3) normalize and create inventory key (NO delimiter)
+    if INV_SKU_COL in inv.columns and INV_BATCH_COL in inv.columns:
+        inv["INV_KEY"] = concat_no_delim(inv[INV_SKU_COL], inv[INV_BATCH_COL])
     else:
-        df["HO_CODE_STR"] = ""
+        inv["INV_KEY"] = ""
 
-    # Build SKU-Batch key from SKU Code + Batch (N + Q)
-    if INV_SKU_COL in df.columns and INV_BATCH_COL in df.columns:
-        df["SKU_BATCH_INV"] = (
-            df[INV_SKU_COL].astype(str).str.strip()
-            + "|"
-            + df[INV_BATCH_COL].astype(str).str.strip()
-        )
+    # 4) normalize HU codes in inventory
+    if INV_HU_CODE_COL in inv.columns:
+        inv["HU_norm"] = normalize_series(inv[INV_HU_CODE_COL])
     else:
-        df["SKU_BATCH_INV"] = ""
+        inv["HU_norm"] = ""
 
-    return df
-
-
-# --------------------------------
-# Step 2 & 3: Full analysis pipeline
-# --------------------------------
-def analyze(inv_df: pd.DataFrame,
-            conv_df: pd.DataFrame,
-            out_df: pd.DataFrame):
-
-    # 1) Clean inventory (partial CLD, active, cartons, good, included)
-    clean_inv = clean_inventory(inv_df)
-
-    # 2) Not-fed HUs: Inventory HO Code (K) vs Conveyor InnerHU (H)
+    # 5) conveyor normalize
     conv = conv_df.copy()
-    conv["INNER_HU_STR"] = conv[CONV_INNER_HU_COL].astype(str).str.strip()
+    if CONV_INNER_HU_COL in conv.columns:
+        conv["INNER_norm"] = normalize_series(conv[CONV_INNER_HU_COL])
+    else:
+        # try to detect similar column if naming slightly different
+        matched = [c for c in conv.columns if "inner" in c.lower() and "hu" in c.lower()]
+        if matched:
+            conv["INNER_norm"] = normalize_series(conv[matched[0]])
+        else:
+            conv["INNER_norm"] = ""
 
-    fed_hus = set(conv["INNER_HU_STR"].dropna())
-    not_fed_inv = clean_inv[~clean_inv["HO_CODE_STR"].isin(fed_hus)].copy()
+    # Map inventory HU -> conveyor HU (for rows that are fed)
+    fed_set = set(conv["INNER_norm"].dropna().unique())
 
-    # 3) Build SKU-Batch key in outbound SBL (Sku + Batch Allocated: K & N)
+    # 6) outbound keys: create normalized key and also keep original concatenation for SBL Demand column
     out = out_df.copy()
-    out["SKU_BATCH_SBL"] = (
-        out[OUT_SKU_COL].astype(str).str.strip()
-        + "|"
-        + out[OUT_BATCH_COL].astype(str).str.strip()
-    )
+    if OUT_SKU_COL in out.columns and OUT_BATCH_COL in out.columns:
+        out["OUT_KEY"] = concat_no_delim(out[OUT_SKU_COL], out[OUT_BATCH_COL])
+        # Original-style (exact concatenation without delimiter) to show in final sheet (preserve original values trimmed)
+        out["OUT_CONCAT"] = out[OUT_SKU_COL].fillna("").astype(str).str.strip() + out[OUT_BATCH_COL].fillna("").astype(str).str.strip()
+    else:
+        out["OUT_KEY"] = ""
+        out["OUT_CONCAT"] = ""
 
-    demand_keys = set(out["SKU_BATCH_SBL"].dropna())
+    # Build mapping OUT_KEY -> OUT_CONCAT (first occurrence)
+    out_map = out.dropna(subset=["OUT_KEY"]).drop_duplicates(subset=["OUT_KEY"]).set_index("OUT_KEY")["OUT_CONCAT"].to_dict()
+    demand_keys = set(out["OUT_KEY"].dropna().unique())
 
-    # 4) Final output:
-    #    Inventory rows that are NOT fed AND whose SKU-Batch exists in SBL demand
-    not_fed_and_demanded = not_fed_inv[
-        not_fed_inv["SKU_BATCH_INV"].isin(demand_keys)
-    ].copy()
+    # 7) Find not-fed inventory rows
+    inv["Is_Fed"] = inv["HU_norm"].isin(fed_set)
+    not_fed = inv[inv["Is_Fed"] == False].copy()
 
-    return clean_inv, not_fed_inv, not_fed_and_demanded
+    # 8) From not_fed, keep only those whose INV_KEY is in demand_keys
+    not_fed["INV_KEY"] = not_fed["INV_KEY"].fillna("")
+    mask = not_fed["INV_KEY"].isin(demand_keys)
+    final = not_fed[mask].copy()
 
+    # 9) Add Conveyor_HU column (for context) - blank since these are not fed, but keep for parity
+    #    For safety, we can attempt to map inventory HU to any conveyor HU if exists (probably none)
+    final["Conveyor_HU"] = ""  # empty because these HUs are not fed
+    # 10) Add SBL Demand column using mapping from OUT_KEY -> OUT_CONCAT
+    final["SBL Demand"] = final["INV_KEY"].map(lambda k: out_map.get(k, ""))
 
-# --------------------------------
-# Streamlit UI
-# --------------------------------
-st.set_page_config(page_title="Wave Inventory Analyzer", layout="wide")
-st.title("📦 Wave Inventory Analyzer (HU Level inventory)")
+    # Reorder to keep all original inventory columns first, then append Conveyor_HU and SBL Demand
+    inventory_cols = list(inv_df.columns) if len(inv_df.columns) > 0 else list(final.columns)
+    # ensure columns that may not exist are filtered
+    inventory_cols = [c for c in inventory_cols if c in final.columns]
+    extra_cols = [c for c in ["Conveyor_HU", "SBL Demand"] if c in final.columns]
+    final = final.reindex(columns=inventory_cols + extra_cols)
 
-st.write(
-    """
-This app automates your manual process:
+    return final, {
+        "counts": {
+            "inventory_after_filters": len(inv),
+            "not_fed_count": len(not_fed),
+            "final_matched_count": len(final),
+            "demand_keys": len(demand_keys)
+        }
+    }
 
-1. From the Inventory workbook, it uses only the **'HU Level'** sheet.
-2. Filters rows where:
-   - **Area Code** = `partial CLD`
-   - **Bin Status** = `Active`
-   - **HU Type** = `Cartons`
-   - **Quality** = `Good`
-   - **Inclusion Status** = `Included`
-3. Finds **HUs not fed** by comparing:
-   - Inventory **HO Code (K)**
-   - Conveyor **InnerHU (H)**
-4. Builds SKU–Batch:
-   - Inventory: **Sku Code (N) + Batch (Q)**
-   - SBL: **Sku (K) + Batch Allocated (N)**
-5. Final result: inventory rows that were **not fed** but **had demand in SBL**.
-"""
-)
+# --------------------------
+# Streamlit App UI
+# --------------------------
+st.set_page_config(page_title="Wave Inventory Analyzer — Final Output", layout="wide")
+st.title("📦 Wave Inventory Analyzer — Final single-sheet output")
 
-inv_file = st.file_uploader("1️⃣ Upload Inventory workbook (with 'HU Level' sheet)", type=["xlsx", "xls"])
-conv_file = st.file_uploader("2️⃣ Upload Conveyor file", type=["xlsx", "xls"])
-out_file = st.file_uploader("3️⃣ Upload Outbound SBL file", type=["xlsx", "xls"])
+st.markdown("""
+Upload the three files for one wave:
+1. Inventory workbook (must contain **'HU level'** sheet)  
+2. Conveyor HU Events report  
+3. Outbound SBL report  
+
+The output will be a single sheet containing full inventory rows for HUs that:
+- were in partial CLD, Active, Cartons, Good, Included  
+- were **NOT fed** to conveyor  
+- and whose SKU+Batch (concatenated **without** delimiter) appears in the SBL outbound file.
+""")
+
+inv_file = st.file_uploader("1️⃣ Inventory workbook (with 'HU level')", type=["xlsx", "xls"])
+conv_file = st.file_uploader("2️⃣ Conveyor HU Events file", type=["xlsx", "xls"])
+out_file = st.file_uploader("3️⃣ Outbound SBL report", type=["xlsx", "xls"])
 
 if inv_file and conv_file and out_file:
-    if st.button("🚀 Run Analysis"):
-        # ----- Read Inventory: HU Level sheet -----
+    if st.button("Run and produce final sheet"):
+        # 1) load inventory HU level sheet
         try:
-            inv_xls = pd.ExcelFile(inv_file)
-            if INV_SHEET_NAME not in inv_xls.sheet_names:
-                st.error(
-                    f"Inventory workbook does not contain a sheet named '{INV_SHEET_NAME}'.\n"
-                    f"Available sheets: {inv_xls.sheet_names}"
-                )
+            xls = pd.ExcelFile(inv_file)
+            if INV_SHEET_NAME not in xls.sheet_names:
+                st.error(f"Inventory workbook does not contain sheet '{INV_SHEET_NAME}'. Available: {xls.sheet_names}")
                 st.stop()
-            inv_df = pd.read_excel(inv_xls, sheet_name=INV_SHEET_NAME)
+            inv_df = pd.read_excel(xls, sheet_name=INV_SHEET_NAME)
         except Exception as e:
-            st.error(f"Failed to read inventory HU Level sheet: {e}")
+            st.error(f"Failed reading inventory workbook: {e}")
             st.stop()
 
-        # ----- Read Conveyor & Outbound -----
-        conv_df = pd.read_excel(conv_file)
-        out_df = pd.read_excel(out_file)
+        # 2) load other files
+        try:
+            conv_df = pd.read_excel(conv_file)
+        except Exception as e:
+            st.error(f"Failed reading conveyor file: {e}")
+            st.stop()
 
-        # Check required columns exist
-        ok = True
-        ok &= require_columns(
-            inv_df,
-            [
-                INV_AREA_COL, INV_BIN_STATUS_COL, INV_HU_TYPE_COL,
-                INV_QUALITY_COL, INV_INCLUSION_COL, INV_HU_CODE_COL,
-                INV_SKU_COL, INV_BATCH_COL
-            ],
-            "Inventory (HU Level) sheet",
-        )
-        ok &= require_columns(
-            conv_df,
-            [CONV_INNER_HU_COL],
-            "Conveyor file",
-        )
-        ok &= require_columns(
-            out_df,
-            [OUT_SKU_COL, OUT_BATCH_COL],
-            "Outbound SBL file",
-        )
+        try:
+            out_df = pd.read_excel(out_file)
+        except Exception as e:
+            st.error(f"Failed reading outbound file: {e}")
+            st.stop()
 
-        if ok:
-            clean_inv, not_fed_inv, not_fed_and_demanded = analyze(inv_df, conv_df, out_df)
+        # run pipeline
+        final_sheet, meta = run_pipeline(inv_df, conv_df, out_df)
 
-            st.subheader("✅ Clean Inventory (HU Level, after all filters)")
-            st.dataframe(clean_inv.head(50))
+        st.markdown("### Summary")
+        st.write(meta["counts"])
 
-            st.subheader("❌ Not Fed Inventory HUs (rows from HU Level sheet)")
-            st.dataframe(not_fed_inv.head(50))
+        st.markdown("### Final Output Preview (top 200 rows)")
+        st.dataframe(final_sheet.head(200))
 
-            st.subheader("📌 Not Fed but Required in SBL Demand (final output)")
-            st.dataframe(not_fed_and_demanded.head(50))
+        # create downloadable single-sheet workbook
+        buffer = io.BytesIO()
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        fname = f"Not_Fed_and_Demanded_{ts}.xlsx"
+        with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+            final_sheet.to_excel(writer, sheet_name="Not_Fed_and_Demanded", index=False)
+        buffer.seek(0)
 
-            # Prepare Excel for download
-            buffer = io.BytesIO()
-            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            file_name = f"wave_analysis_{ts}.xlsx"
-
-            with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-                clean_inv.to_excel(writer, sheet_name="clean_inventory_HU_level", index=False)
-                not_fed_inv.to_excel(writer, sheet_name="not_fed_inventory", index=False)
-                not_fed_and_demanded.to_excel(writer, sheet_name="not_fed_and_demanded", index=False)
-                conv_df.to_excel(writer, sheet_name="raw_conveyor", index=False)
-                out_df.to_excel(writer, sheet_name="raw_outbound", index=False)
-
-            buffer.seek(0)
-
-            st.markdown("### ⬇️ Download analyzed Excel")
-            st.download_button(
-                label="Download",
-                data=buffer,
-                file_name=file_name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+        st.download_button("⬇️ Download final sheet (single-sheet Excel)", buffer, fname,
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 else:
-    st.info("Upload all three files and then click 'Run Analysis'.")
-
-
+    st.info("Please upload Inventory workbook, Conveyor file, and Outbound SBL file.")
