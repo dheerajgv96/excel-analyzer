@@ -6,9 +6,9 @@ import datetime
 # --------------------------
 # FINAL CONFIG (matches your files)
 # --------------------------
-INV_SHEET_NAME = "HU level"        # inventory workbook sheet to use
+INV_SHEET_NAME = "HU Level"        # inventory workbook sheet to use
 
-# Inventory (HU level) columns
+# Inventory (HU Level) columns
 INV_AREA_COL = "Area Code"         # Column C
 INV_BIN_STATUS_COL = "Bin Status"  # Column G
 INV_HU_TYPE_COL = "HU Type"        # Column L
@@ -44,7 +44,7 @@ def concat_no_delim(a: pd.Series, b: pd.Series) -> pd.Series:
 # Core pipeline
 # --------------------------
 def run_pipeline(inv_df: pd.DataFrame, conv_df: pd.DataFrame, out_df: pd.DataFrame):
-    # 1) Use HU level sheet (inv_df already from that sheet)
+    # 1) Use HU Level sheet (inv_df already from that sheet)
     inv = inv_df.copy()
 
     # 2) Apply inventory filters (safe if columns missing)
@@ -139,7 +139,7 @@ st.title("📦 Wave Inventory Analyzer — Final single-sheet output")
 
 st.markdown("""
 Upload the three files for one wave:
-1. Inventory workbook (must contain **'HU level'** sheet)  
+1. Inventory workbook (must contain **'HU Level'** sheet)  
 2. Conveyor HU Events report  
 3. Outbound SBL report  
 
@@ -149,13 +149,13 @@ The output will be a single sheet containing full inventory rows for HUs that:
 - and whose SKU+Batch (concatenated **without** delimiter) appears in the SBL outbound file.
 """)
 
-inv_file = st.file_uploader("1️⃣ Inventory workbook (with 'HU level')", type=["xlsx", "xls"])
+inv_file = st.file_uploader("1️⃣ Inventory workbook (with 'HU Level')", type=["xlsx", "xls"])
 conv_file = st.file_uploader("2️⃣ Conveyor HU Events file", type=["xlsx", "xls"])
 out_file = st.file_uploader("3️⃣ Outbound SBL report", type=["xlsx", "xls"])
 
 if inv_file and conv_file and out_file:
     if st.button("Run and produce final sheet"):
-        # 1) load inventory HU level sheet
+        # 1) load inventory HU Level sheet
         try:
             xls = pd.ExcelFile(inv_file)
             if INV_SHEET_NAME not in xls.sheet_names:
@@ -200,3 +200,4 @@ if inv_file and conv_file and out_file:
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 else:
     st.info("Please upload Inventory workbook, Conveyor file, and Outbound SBL file.")
+
